@@ -11,7 +11,7 @@ sleep 1
 pip install -r requirements.txt --break-system-packages -q
 
 # Start in screen session
-screen -dmS smmbot bash -c "python bot.py 2>&1 | tee -a bot.log"
+screen -dmS smmbot bash -c "python3 bot.py 2>&1 | tee -a bot.log"
 
 echo "✅ SMM Bot started in screen session 'smmbot'"
 echo "Use: screen -r smmbot  to attach"
