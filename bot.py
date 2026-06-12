@@ -401,6 +401,7 @@ async def pay_cancel(cb: CallbackQuery):
 # Global cache for services (avoids re-fetching on every button press)
 _services_cache: list = []
 _categories_cache: dict = {}
+USD_TO_INR = 84.0  # 1 USD = 84 INR (update if needed)
 
 async def fetch_and_cache_services():
     global _services_cache, _categories_cache
@@ -465,7 +466,7 @@ def build_services_page(cat_idx: int, page: int) -> tuple:
             "telegram channel member", "telegram members"
         ])
         m = 1.50 if is_tg else 1.20
-        display_rate = round(float(svc["rate"]) * m, 4)
+        display_rate = round(float(svc["rate"]) * USD_TO_INR * m, 4)
         text += (
             f"🆔 <code>{svc['service']}</code> — {svc['name'][:45]}\n"
             f"   💰 ₹{display_rate}/1k | Min: {svc['min']} Max: {svc['max']}\n\n"
@@ -580,7 +581,7 @@ async def order_service_id(msg: Message, state: FSMContext):
     await msg.answer(
         f"✅ <b>Service Found:</b>\n\n"
         f"📦 {service['name']}\n"
-        f"💰 Rate: ₹{service['rate']} per 1000\n"
+        f"💰 Rate: ₹{round(float(service['rate']) * USD_TO_INR, 4)} per 1000\n"
         f"📊 Min: {service['min']} | Max: {service['max']}\n\n"
         f"Now send the <b>link/URL</b> for this order:",
         parse_mode="HTML"
@@ -624,7 +625,7 @@ async def order_quantity(msg: Message, state: FSMContext):
         "telegram channel member", "telegram members"
     ])
     markup = 1.50 if is_tg_members else 1.20
-    cost = round((float(service["rate"]) * qty * markup) / 1000, 2)
+    cost = round((float(service["rate"]) * USD_TO_INR * qty * markup) / 1000, 2)
     user = await db.get_or_create_user(msg.from_user.id, msg.from_user.full_name, msg.from_user.username)
 
     await state.update_data(quantity=qty, cost=cost)
