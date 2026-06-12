@@ -458,9 +458,17 @@ def build_services_page(cat_idx: int, page: int) -> tuple:
 
     text = f"📁 <b>{cat_name}</b>  (Page {page+1}/{total_pages})\n\n"
     for svc in page_svcs:
+        svc_n = svc.get("name", "").lower()
+        svc_c = svc.get("category", "").lower()
+        is_tg = any(kw in svc_n or kw in svc_c for kw in [
+            "telegram member", "tg member", "telegram group member",
+            "telegram channel member", "telegram members"
+        ])
+        m = 1.50 if is_tg else 1.20
+        display_rate = round(float(svc["rate"]) * m, 4)
         text += (
             f"🆔 <code>{svc['service']}</code> — {svc['name'][:45]}\n"
-            f"   💰 ₹{svc['rate']}/1k | Min: {svc['min']} Max: {svc['max']}\n\n"
+            f"   💰 ₹{display_rate}/1k | Min: {svc['min']} Max: {svc['max']}\n\n"
         )
 
     nav = []
