@@ -398,36 +398,124 @@ async def pay_cancel(cb: CallbackQuery):
 
 # ─── Services ─────────────────────────────────────────────────────────────────
 
-@router.message(F.text == "📊 Services")
-async def services_list(msg: Message):
-    await msg.answer("⏳ Fetching services from panel...")
-    result = await smm_api("services")
+# Global cache for services (avoids re-fetching on every button press)
+_services_cache: list = []
+_categories_cache: dict = {}
 
+async def fetch_and_cache_services():
+    global _services_cache, _categories_cache
+    result = await smm_api("services")
     if isinstance(result, list) and len(result) > 0:
-        # Group by category
-        categories = {}
+        _services_cache = result
+        cats = {}
         for svc in result:
             cat = svc.get("category", "Other")
-            if cat not in categories:
-                categories[cat] = []
-            categories[cat].append(svc)
+            if cat not in cats:
+                cats[cat] = []
+            cats[cat].append(svc)
+        _categories_cache = cats
+        return True
+    return False
 
-        # Show first 5 categories as buttons
-        cat_list = list(categories.keys())[:10]
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text=f"📁 {cat}", callback_data=f"cat_{i}")]
-            for i, cat in enumerate(cat_list)
-        ] + [[InlineKeyboardButton(text="🔍 Search by ID", callback_data="search_service")]])
+@router.message(F.text == "📊 Services")
+async def services_list(msg: Message):
+    wait = await msg.answer("⏳ Fetching services...")
+    ok = await fetch_and_cache_services()
 
-        # Store categories in a simple way
-        cats_text = "\n".join([f"{i}. {cat} ({len(categories[cat])} services)" for i, cat in enumerate(cat_list)])
-        await msg.answer(
+    if ok:
+        cat_list = list(_categories_cache.keys())
+        rows = []
+        for i in range(0, len(cat_list[:20]), 2):
+            row = [InlineKeyboardButton(text=f"📁 {cat_list[i]}", callback_data=f"cat_{i}")]
+            if i+1 < len(cat_list[:20]):
+                row.append(InlineKeyboardButton(text=f"📁 {cat_list[i+1]}", callback_data=f"cat_{i+1}"))
+            rows.append(row)
+
+        kb = InlineKeyboardMarkup(inline_keyboard=rows)
+        cats_text = "\n".join([
+            f"<b>{i}.</b> {cat} — {len(_categories_cache[cat])} services"
+            for i, cat in enumerate(list(_categories_cache.keys())[:20])
+        ])
+        await wait.edit_text(
             f"📊 <b>Service Categories</b>\n\n{cats_text}\n\nSelect a category:",
             parse_mode="HTML",
             reply_markup=kb
         )
     else:
-        await msg.answer("❌ Could not fetch services. Try again later.")
+        await wait.edit_text("❌ Could not fetch services. Check your SMM API key.")
+
+@router.callback_query(F.data.startswith("cat_"))
+async def show_category_services(cb: CallbackQuery):
+    await cb.answer()
+    idx = int(cb.data.split("_")[1])
+
+    if not _categories_cache:
+        await cb.message.edit_text("❌ Services not loaded. Press 📊 Services again.")
+        return
+
+    cat_list = list(_categories_cache.keys())
+    if idx >= len(cat_list):
+        await cb.answer("Category not found!", show_alert=True)
+        return
+
+    cat_name = cat_list[idx]
+    services = _categories_cache[cat_name]
+
+    text = f"📁 <b>{cat_name}</b>\n\n"
+    for svc in services[:25]:  # max 25 per page
+        text += (
+            f"🆔 <code>{svc['service']}</code> — {svc['name'][:50]}\n"
+            f"   💰 ₹{svc['rate']}/1k | Min: {svc['min']} Max: {svc['max']}\n\n"
+        )
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="◀️ Back to Categories", callback_data="back_categories")],
+        [InlineKeyboardButton(text="🛒 Place Order", callback_data="go_order")]
+    ])
+
+    # Telegram message max 4096 chars
+    if len(text) > 4000:
+        text = text[:4000] + "\n\n<i>...and more. Use Service ID to order.</i>"
+
+    await cb.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+
+@router.callback_query(F.data == "back_categories")
+async def back_to_categories(cb: CallbackQuery):
+    await cb.answer()
+    if not _categories_cache:
+        await cb.message.edit_text("Press 📊 Services to reload.")
+        return
+
+    cat_list = list(_categories_cache.keys())
+    rows = []
+    for i in range(0, len(cat_list[:20]), 2):
+        row = [InlineKeyboardButton(text=f"📁 {cat_list[i]}", callback_data=f"cat_{i}")]
+        if i+1 < len(cat_list[:20]):
+            row.append(InlineKeyboardButton(text=f"📁 {cat_list[i+1]}", callback_data=f"cat_{i+1}"))
+        rows.append(row)
+
+    kb = InlineKeyboardMarkup(inline_keyboard=rows)
+    cats_text = "\n".join([
+        f"<b>{i}.</b> {cat} — {len(_categories_cache[cat])} services"
+        for i, cat in enumerate(list(_categories_cache.keys())[:20])
+    ])
+    await cb.message.edit_text(
+        f"📊 <b>Service Categories</b>\n\n{cats_text}\n\nSelect a category:",
+        parse_mode="HTML",
+        reply_markup=kb
+    )
+
+@router.callback_query(F.data == "go_order")
+async def go_order_from_services(cb: CallbackQuery, state: FSMContext):
+    await cb.answer()
+    await cb.message.edit_text("🛒 Send the <b>Service ID</b> to place order:", parse_mode="HTML")
+    await state.set_state(OrderStates.waiting_service_id)
+
+@router.callback_query(F.data == "search_service")
+async def search_service_cb(cb: CallbackQuery, state: FSMContext):
+    await cb.answer()
+    await cb.message.edit_text("🔍 Enter <b>Service ID</b>:", parse_mode="HTML")
+    await state.set_state(OrderStates.waiting_service_id)
 
 # ─── New Order ────────────────────────────────────────────────────────────────
 
