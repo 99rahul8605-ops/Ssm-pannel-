@@ -444,10 +444,46 @@ async def services_list(msg: Message):
     else:
         await wait.edit_text("❌ Could not fetch services. Check your SMM API key.")
 
+PER_PAGE = 10
+
+def build_services_page(cat_idx: int, page: int) -> tuple:
+    cat_list = list(_categories_cache.keys())
+    cat_name = cat_list[cat_idx]
+    services = _categories_cache[cat_name]
+    total = len(services)
+    total_pages = (total + PER_PAGE - 1) // PER_PAGE
+    start = page * PER_PAGE
+    end = min(start + PER_PAGE, total)
+    page_svcs = services[start:end]
+
+    text = f"📁 <b>{cat_name}</b>  (Page {page+1}/{total_pages})\n\n"
+    for svc in page_svcs:
+        text += (
+            f"🆔 <code>{svc['service']}</code> — {svc['name'][:45]}\n"
+            f"   💰 ₹{svc['rate']}/1k | Min: {svc['min']} Max: {svc['max']}\n\n"
+        )
+
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton(text="⬅️ Prev", callback_data=f"cat_{cat_idx}_p{page-1}"))
+    if page < total_pages - 1:
+        nav.append(InlineKeyboardButton(text="Next ➡️", callback_data=f"cat_{cat_idx}_p{page+1}"))
+
+    kb_rows = []
+    if nav:
+        kb_rows.append(nav)
+    kb_rows.append([
+        InlineKeyboardButton(text="◀️ Categories", callback_data="back_categories"),
+        InlineKeyboardButton(text="🛒 Order", callback_data="go_order")
+    ])
+    return text, InlineKeyboardMarkup(inline_keyboard=kb_rows)
+
 @router.callback_query(F.data.startswith("cat_"))
 async def show_category_services(cb: CallbackQuery):
     await cb.answer()
-    idx = int(cb.data.split("_")[1])
+    parts = cb.data.split("_")
+    idx = int(parts[1])
+    page = int(parts[2][1:]) if len(parts) > 2 else 0
 
     if not _categories_cache:
         await cb.message.edit_text("❌ Services not loaded. Press 📊 Services again.")
@@ -458,25 +494,7 @@ async def show_category_services(cb: CallbackQuery):
         await cb.answer("Category not found!", show_alert=True)
         return
 
-    cat_name = cat_list[idx]
-    services = _categories_cache[cat_name]
-
-    text = f"📁 <b>{cat_name}</b>\n\n"
-    for svc in services[:25]:  # max 25 per page
-        text += (
-            f"🆔 <code>{svc['service']}</code> — {svc['name'][:50]}\n"
-            f"   💰 ₹{svc['rate']}/1k | Min: {svc['min']} Max: {svc['max']}\n\n"
-        )
-
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="◀️ Back to Categories", callback_data="back_categories")],
-        [InlineKeyboardButton(text="🛒 Place Order", callback_data="go_order")]
-    ])
-
-    # Telegram message max 4096 chars
-    if len(text) > 4000:
-        text = text[:4000] + "\n\n<i>...and more. Use Service ID to order.</i>"
-
+    text, kb = build_services_page(idx, page)
     await cb.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
 
 @router.callback_query(F.data == "back_categories")
@@ -590,7 +608,15 @@ async def order_quantity(msg: Message, state: FSMContext):
         await msg.answer(f"❌ Quantity must be between {service['min']} and {service['max']}")
         return
 
-    cost = round((float(service["rate"]) * qty) / 1000, 2)
+    # Markup: 50% Telegram Members, 20% baaki sab
+    svc_name_lower = service.get("name", "").lower()
+    svc_cat_lower = service.get("category", "").lower()
+    is_tg_members = any(kw in svc_name_lower or kw in svc_cat_lower for kw in [
+        "telegram member", "tg member", "telegram group member",
+        "telegram channel member", "telegram members"
+    ])
+    markup = 1.50 if is_tg_members else 1.20
+    cost = round((float(service["rate"]) * qty * markup) / 1000, 2)
     user = await db.get_or_create_user(msg.from_user.id, msg.from_user.full_name, msg.from_user.username)
 
     await state.update_data(quantity=qty, cost=cost)
