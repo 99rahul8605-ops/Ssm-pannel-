@@ -401,7 +401,25 @@ async def pay_cancel(cb: CallbackQuery):
 # Global cache for services (avoids re-fetching on every button press)
 _services_cache: list = []
 _categories_cache: dict = {}
-USD_TO_INR = 84.0  # 1 USD = 84 INR (update if needed)
+_usd_to_inr: float = 95.0  # fallback
+_usd_rate_fetched_at: float = 0
+
+async def get_usd_to_inr() -> float:
+    """Fetch live USD/INR rate, cache for 1 hour"""
+    global _usd_to_inr, _usd_rate_fetched_at
+    if time.time() - _usd_rate_fetched_at < 3600:
+        return _usd_to_inr
+    try:
+        async with aiohttp.ClientSession() as s:
+            async with s.get("https://open.er-api.com/v6/latest/USD", timeout=aiohttp.ClientTimeout(total=5)) as r:
+                data = await r.json()
+                if data.get("result") == "success":
+                    _usd_to_inr = float(data["rates"]["INR"])
+                    _usd_rate_fetched_at = time.time()
+                    logger.info(f"USD/INR rate updated: {_usd_to_inr}")
+    except Exception as e:
+        logger.warning(f"Could not fetch USD/INR rate, using {_usd_to_inr}: {e}")
+    return _usd_to_inr
 
 async def fetch_and_cache_services():
     global _services_cache, _categories_cache
@@ -447,7 +465,7 @@ async def services_list(msg: Message):
 
 PER_PAGE = 10
 
-def build_services_page(cat_idx: int, page: int) -> tuple:
+async def build_services_page(cat_idx: int, page: int) -> tuple:
     cat_list = list(_categories_cache.keys())
     cat_name = cat_list[cat_idx]
     services = _categories_cache[cat_name]
@@ -457,6 +475,7 @@ def build_services_page(cat_idx: int, page: int) -> tuple:
     end = min(start + PER_PAGE, total)
     page_svcs = services[start:end]
 
+    usd_rate = await get_usd_to_inr()
     text = f"📁 <b>{cat_name}</b>  (Page {page+1}/{total_pages})\n\n"
     for svc in page_svcs:
         svc_n = svc.get("name", "").lower()
@@ -465,8 +484,8 @@ def build_services_page(cat_idx: int, page: int) -> tuple:
             "telegram member", "tg member", "telegram group member",
             "telegram channel member", "telegram members"
         ])
-        m = 1.50 if is_tg else 1.20
-        display_rate = round(float(svc["rate"]) * USD_TO_INR * m, 4)
+        m = config.TG_MEMBER_MARKUP if is_tg else config.DEFAULT_MARKUP
+        display_rate = round(float(svc["rate"]) * usd_rate * m, 4)
         text += (
             f"🆔 <code>{svc['service']}</code> — {svc['name'][:45]}\n"
             f"   💰 ₹{display_rate}/1k | Min: {svc['min']} Max: {svc['max']}\n\n"
@@ -503,7 +522,7 @@ async def show_category_services(cb: CallbackQuery):
         await cb.answer("Category not found!", show_alert=True)
         return
 
-    text, kb = build_services_page(idx, page)
+    text, kb = await build_services_page(idx, page)
     await cb.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
 
 @router.callback_query(F.data == "back_categories")
@@ -577,11 +596,12 @@ async def order_service_id(msg: Message, state: FSMContext):
         await msg.answer(f"❌ Service ID {service_id} not found. Please check and try again.")
         return
 
+    usd_rate = await get_usd_to_inr()
     await state.update_data(service=service)
     await msg.answer(
         f"✅ <b>Service Found:</b>\n\n"
         f"📦 {service['name']}\n"
-        f"💰 Rate: ₹{round(float(service['rate']) * USD_TO_INR, 4)} per 1000\n"
+        f"💰 Rate: ₹{round(float(service['rate']) * usd_rate, 4)} per 1000\n"
         f"📊 Min: {service['min']} | Max: {service['max']}\n\n"
         f"Now send the <b>link/URL</b> for this order:",
         parse_mode="HTML"
@@ -624,8 +644,9 @@ async def order_quantity(msg: Message, state: FSMContext):
         "telegram member", "tg member", "telegram group member",
         "telegram channel member", "telegram members"
     ])
-    markup = 1.50 if is_tg_members else 1.20
-    cost = round((float(service["rate"]) * USD_TO_INR * qty * markup) / 1000, 2)
+    markup = config.TG_MEMBER_MARKUP if is_tg_members else config.DEFAULT_MARKUP
+    usd_rate = await get_usd_to_inr()
+    cost = round((float(service["rate"]) * usd_rate * qty * markup) / 1000, 2)
     user = await db.get_or_create_user(msg.from_user.id, msg.from_user.full_name, msg.from_user.username)
 
     await state.update_data(quantity=qty, cost=cost)
